@@ -1,0 +1,794 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.IO;
+namespace porter
+{
+    /*
+
+       Porter stemmer in CSharp, based on the Java port. The original paper is in
+
+           Porter, 1980, An algorithm for suffix stripping, Program, Vol. 14,
+           no. 3, pp 130-137,
+
+       See also http://www.tartarus.org/~martin/PorterStemmer
+
+       History:
+
+       Release 1
+
+       Bug 1 (reported by Gonzalo Parra 16/10/99) fixed as marked below.
+       The words 'aed', 'eed', 'oed' leave k at 'a' for step 3, and b[k-1]
+       is then out outside the bounds of b.
+
+       Release 2
+
+       Similarly,
+
+       Bug 2 (reported by Steve Dyrdahl 22/2/00) fixed as marked below.
+       'ion' by itself leaves j = -1 in the test for 'ion' in step 5, and
+       b[j] is then outside the bounds of b.
+
+       Release 3
+
+       Considerably revised 4/9/00 in the light of many helpful suggestions
+       from Brian Goetz of Quiotix Corporation (brian@quiotix.com).
+
+       Release 4
+
+    */
+
+    /**
+      * Stemmer, implementing the Porter Stemming Algorithm
+      *
+      * The Stemmer class transforms a word into its root form.  The input
+      * word can be provided a character at time (by calling add()), or at once
+      * by calling one of the various stem(something) methods.
+      */
+
+    class Stemmer
+    {
+        private char[] b;
+        private int i,     /* offset into b */
+            i_end, /* offset to end of stemmed word */
+            j, k;
+        private static int INC = 50;
+        /* unit of size whereby b is increased */
+
+        public Stemmer()
+        {
+            b = new char[INC];
+            i = 0;
+            i_end = 0;
+        }//creat constructor
+
+        /**
+         * Add a character to the word being stemmed.  When you are finished
+         * adding characters, you can call stem(void) to stem the word.
+         */
+
+        public void add(char ch)
+        {
+            if (i == b.Length)
+            {
+                char[] new_b = new char[i + INC];
+                for (int c = 0; c < i; c++)
+                    new_b[c] = b[c];
+                b = new_b;
+            }
+            b[i++] = ch;
+        }
+
+
+        /** Adds wLen characters to the word being stemmed contained in a portion
+         * of a char[] array. This is like repeated calls of add(char ch), but
+         * faster.
+         */
+
+        public void add(char[] w, int wLen)
+        {
+            if (i + wLen >= b.Length)
+            {
+                char[] new_b = new char[i + wLen + INC];
+                for (int c = 0; c < i; c++)
+                    new_b[c] = b[c];
+                b = new_b;
+            }
+            for (int c = 0; c < wLen; c++)
+                b[i++] = w[c];
+        }
+
+        /**
+         * After a word has been stemmed, it can be retrieved by toString(),
+         * or a reference to the internal buffer can be retrieved by getResultBuffer
+         * and getResultLength (which is generally more efficient.)
+         */
+        public override string ToString()
+        {
+            return new String(b, 0, i_end);
+        }
+
+        /**
+         * Returns the length of the word resulting from the stemming process.
+         */
+        public int getResultLength()
+        {
+            return i_end;
+        }
+
+        /**
+         * Returns a reference to a character buffer containing the results of
+         * the stemming process.  You also need to consult getResultLength()
+         * to determine the length of the result.
+         */
+        public char[] getResultBuffer()
+        {
+            return b;
+        }
+
+        /* cons(i) is true <=> b[i] is a consonant. */
+        private bool cons(int i)
+        {
+            switch (b[i])
+            {
+                case 'a':
+                case 'e':
+                case 'i':
+                case 'o':
+                case 'u': return false;
+                case 'y': return (i == 0) ? true : !cons(i - 1);
+                default: return true;
+            }
+        }
+
+        /* m() measures the number of consonant sequences between 0 and j. if c is
+           a consonant sequence and v a vowel sequence, and <..> indicates arbitrary
+           presence,
+
+              <c><v>       gives 0
+              <c>vc<v>     gives 1
+              <c>vcvc<v>   gives 2
+              <c>vcvcvc<v> gives 3
+              ....
+        */
+        private int m()
+        {
+            int n = 0;
+            int i = 0;
+            while (true)
+            {
+                if (i > j) return n;
+                if (!cons(i)) break; i++;
+            }
+            i++;
+            while (true)
+            {
+                while (true)
+                {
+                    if (i > j) return n;
+                    if (cons(i)) break;
+                    i++;
+                }
+                i++;
+                n++;
+                while (true)
+                {
+                    if (i > j) return n;
+                    if (!cons(i)) break;
+                    i++;
+                }
+                i++;
+            }
+        }
+
+        /* vowelinstem() is true <=> 0,...j contains a vowel */
+        private bool vowelinstem()
+        {
+            int i;
+            for (i = 0; i <= j; i++)
+                if (!cons(i))
+                    return true;
+            return false;
+        }
+
+        /* doublec(j) is true <=> j,(j-1) contain a double consonant. */
+        private bool doublec(int j)
+        {
+            if (j < 1)
+                return false;
+            if (b[j] != b[j - 1])
+                return false;
+            return cons(j);
+        }
+
+        /* cvc(i) is true <=> i-2,i-1,i has the form consonant - vowel - consonant
+           and also if the second c is not w,x or y. this is used when trying to
+           restore an e at the end of a short word. e.g.
+
+              cav(e), lov(e), hop(e), crim(e), but
+              snow, box, tray.
+
+        */
+        private bool cvc(int i)
+        {
+            if (i < 2 || !cons(i) || cons(i - 1) || !cons(i - 2))
+                return false;
+            int ch = b[i];
+            if (ch == 'w' || ch == 'x' || ch == 'y')
+                return false;
+            return true;
+        }
+
+        private bool ends(String s)
+        {
+            int l = s.Length;
+            int o = k - l + 1;
+            if (o < 0)
+                return false;
+            char[] sc = s.ToCharArray();
+            for (int i = 0; i < l; i++)
+                if (b[o + i] != sc[i])
+                    return false;
+            j = k - l;
+            return true;
+        }
+
+        /* setto(s) sets (j+1),...k to the characters in the string s, readjusting
+           k. */
+        private void setto(String s)
+        {
+            int l = s.Length;
+            int o = j + 1;
+            char[] sc = s.ToCharArray();
+            for (int i = 0; i < l; i++)
+                b[o + i] = sc[i];
+            k = j + l;
+        }
+
+        /* r(s) is used further down. */
+        private void r(String s)
+        {
+            if (m() > 0)
+                setto(s);
+        }
+
+        /* step1() gets rid of plurals and -ed or -ing. e.g.
+               caresses  ->  caress
+               ponies    ->  poni
+               ties      ->  ti
+               caress    ->  caress
+               cats      ->  cat
+
+               feed      ->  feed
+               agreed    ->  agree
+               disabled  ->  disable
+
+               matting   ->  mat
+               mating    ->  mate
+               meeting   ->  meet
+               milling   ->  mill
+               messing   ->  mess
+
+               meetings  ->  meet
+
+        */
+
+        private void step1()
+        {
+            if (b[k] == 's')
+            {
+                if (ends("sses"))
+                    k -= 2;
+                else if (ends("ies"))
+                    setto("i");
+                else if (b[k - 1] != 's')
+                    k--;
+            }
+            if (ends("eed"))
+            {
+                if (m() > 0)
+                    k--;
+            }
+            else if ((ends("ed") || ends("ing")) && vowelinstem())
+            {
+                k = j;
+                if (ends("at"))
+                    setto("ate");
+                else if (ends("bl"))
+                    setto("ble");
+                else if (ends("iz"))
+                    setto("ize");
+                else if (doublec(k))
+                {
+                    k--;
+                    int ch = b[k];
+                    if (ch == 'l' || ch == 's' || ch == 'z')
+                        k++;
+                }
+                else if (m() == 1 && cvc(k)) setto("e");
+            }
+        }
+
+        /* step2() turns terminal y to i when there is another vowel in the stem. */
+        private void step2()
+        {
+            if (ends("y") && vowelinstem())
+                b[k] = 'i';
+        }
+
+        /* step3() maps double suffices to single ones. so -ization ( = -ize plus
+           -ation) maps to -ize etc. note that the string before the suffix must give
+           m() > 0. */
+        private void step3()
+        {
+            if (k == 0)
+                return;
+
+            /* For Bug 1 */
+            switch (b[k - 1])
+            {
+                case 'a':
+                    if (ends("ational")) { r("ate"); break; }
+                    if (ends("tional")) { r("tion"); break; }
+                    break;
+                case 'c':
+                    if (ends("enci")) { r("ence"); break; }
+                    if (ends("anci")) { r("ance"); break; }
+                    break;
+                case 'e':
+                    if (ends("izer")) { r("ize"); break; }
+                    break;
+                case 'l':
+                    if (ends("bli")) { r("ble"); break; }
+                    if (ends("alli")) { r("al"); break; }
+                    if (ends("entli")) { r("ent"); break; }
+                    if (ends("eli")) { r("e"); break; }
+                    if (ends("ousli")) { r("ous"); break; }
+                    break;
+                case 'o':
+                    if (ends("ization")) { r("ize"); break; }
+                    if (ends("ation")) { r("ate"); break; }
+                    if (ends("ator")) { r("ate"); break; }
+                    break;
+                case 's':
+                    if (ends("alism")) { r("al"); break; }
+                    if (ends("iveness")) { r("ive"); break; }
+                    if (ends("fulness")) { r("ful"); break; }
+                    if (ends("ousness")) { r("ous"); break; }
+                    break;
+                case 't':
+                    if (ends("aliti")) { r("al"); break; }
+                    if (ends("iviti")) { r("ive"); break; }
+                    if (ends("biliti")) { r("ble"); break; }
+                    break;
+                case 'g':
+                    if (ends("logi")) { r("log"); break; }
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        /* step4() deals with -ic-, -full, -ness etc. similar strategy to step3. */
+        private void step4()
+        {
+            switch (b[k])
+            {
+                case 'e':
+                    if (ends("icate")) { r("ic"); break; }
+                    if (ends("ative")) { r(""); break; }
+                    if (ends("alize")) { r("al"); break; }
+                    break;
+                case 'i':
+                    if (ends("iciti")) { r("ic"); break; }
+                    break;
+                case 'l':
+                    if (ends("ical")) { r("ic"); break; }
+                    if (ends("ful")) { r(""); break; }
+                    break;
+                case 's':
+                    if (ends("ness")) { r(""); break; }
+                    break;
+            }
+        }
+
+        /* step5() takes off -ant, -ence etc., in context <c>vcvc<v>. */
+        private void step5()
+        {
+            if (k == 0)
+                return;
+
+            /* for Bug 1 */
+            switch (b[k - 1])
+            {
+                case 'a':
+                    if (ends("al")) break; return;
+                case 'c':
+                    if (ends("ance")) break;
+                    if (ends("ence")) break; return;
+                case 'e':
+                    if (ends("er")) break; return;
+                case 'i':
+                    if (ends("ic")) break; return;
+                case 'l':
+                    if (ends("able")) break;
+                    if (ends("ible")) break; return;
+                case 'n':
+                    if (ends("ant")) break;
+                    if (ends("ement")) break;
+                    if (ends("ment")) break;
+                    /* element etc. not stripped before the m */
+                    if (ends("ent")) break; return;
+                case 'o':
+                    if (ends("ion") && j >= 0 && (b[j] == 's' || b[j] == 't')) break;
+                    /* j >= 0 fixes Bug 2 */
+                    if (ends("ou")) break; return;
+                /* takes care of -ous */
+                case 's':
+                    if (ends("ism")) break; return;
+                case 't':
+                    if (ends("ate")) break;
+                    if (ends("iti")) break; return;
+                case 'u':
+                    if (ends("ous")) break; return;
+                case 'v':
+                    if (ends("ive")) break; return;
+                case 'z':
+                    if (ends("ize")) break; return;
+                default:
+                    return;
+            }
+            if (m() > 1)
+                k = j;
+        }
+
+        /* step6() removes a final -e if m() > 1. */
+        private void step6()
+        {
+            j = k;
+
+            if (b[k] == 'e')
+            {
+                int a = m();
+                if (a > 1 || a == 1 && !cvc(k - 1))
+                    k--;
+            }
+            if (b[k] == 'l' && doublec(k) && m() > 1)
+                k--;
+        }
+
+        /** Stem the word placed into the Stemmer buffer through calls to add().
+         * Returns true if the stemming process resulted in a word different
+         * from the input.  You can retrieve the result with
+         * getResultLength()/getResultBuffer() or toString().
+         */
+        public void stem()
+        {
+            k = i - 1;
+            if (k > 1)
+            {
+                step1();
+                step2();
+                step3();
+                step4();
+                step5();
+                step6();
+            }
+            i_end = k + 1;
+            i = 0;
+        }
+
+    }
+}
+namespace ConsoleApplication1
+{
+    class Program
+    {
+        public static int numbers_topics = 0;
+        public static int numbers_stopwords = 0;
+        public static UInt64 words_after_delet_stopwords = 0;
+        public static UInt64 words_befor_delet_stopwords = 0;
+        public static int words_after_stemmeinig = 0;
+        public static int words_befor_stemmeinig = 0;
+        public static int words_after_Tokenizing = 0;
+        public static int words_befor_Tokenizing = 0;
+        public static int index_line = 0; 
+        public static int index_word = 0;
+        public static string[] save_topics = new string[91];
+        public static String[,] save_line=new String[1163818,2];
+        public static String[] save_word = new String[25310];
+        public static string[] stopwords = { "a"," ", "associates", "able", "about", "above", "according", "accordingly", "across", "actually", "after", "afterwards", "again", 
+                                             "against", "all", "allow", "allows", "almost", "alone", "along", "already", "also", "although", "always", "am", 
+                                             "among", "amongst", "an", "and", "another", "any", "anybody", "anyhow", "anyone", "anything", "anyway", "anyways", 
+                                             "anywhere", "apart", "appear", "appreciate", "appropriate", "are", "around", "as", "aside", "ask", "asking", "associated",
+                                             "at", "available", "away", "awfully", "b", "be", "became", "because", "become", "becomes", "becoming", "been", "before",
+                                             "beforehand", "behind", "being", "believe", "below", "beside", "besides", "best", "better", "between", "beyond", "both",
+                                             "brief", "but", "by", "c", "came", "can", "cannot", "cant", "cause", "causes", "certain", "certainly", "changes", "clearly",
+                                             "com", "come", "comes", "concerning", "consequently", "consider", "considering", "contain", "containing", "contains", "corresponding", 
+                                             "could", "course", "currently", "d", "definitely", "described", "despite", "did", "different", "do", "does", "doing", "done", "down", 
+                                             "downwards", "during", "e", "each", "edu", "eg", "eight", "either", "else", "elsewhere", "enough", "entirely", "especially",
+                                             "et", "etc", "even", "ever", "every", "everybody", "everyone", "everything", "everywhere", "ex", "exactly", "example", "except", 
+                                             "f", "far", "few", "fifth", "first", "five", "followed", "following", "follows", "for", "former", "formerly", "forth", "four", 
+                                             "from", "further", "furthermore", "g", "get", "gets", "getting", "given", "gives", "go", "goes", "going", "gone", "got", "gotten",
+                                             "greetings", "h", "had", "happens", "hardly", "has", "have", "having", "he", "hello", "help", "hence", "her", "here", "hereafter", 
+                                             "hereby", "herein", "hereupon", "hers", "herself", "hi", "him", "himself", "his", "hither", "hopefully", "how", "howbeit", "however",
+                                             "i", "ie", "if", "ignored", "immediate", "in", "inasmuch", "inc", "indeed", "indicate", "indicated", "indicates", "inner", "insofar", 
+                                             "instead", "into", "inward", "is", "it", "its", "itself", "j", "just", "k", "keep", "keeps", "kept", "know", "knows", "known", "l", 
+                                             "last", "lately", "later", "latter", "latterly", "least", "less", "lest", "let", "like", "liked", "likely", "little", "look", "looking",
+                                             "looks", "ltd", "m", "mainly", "many", "may", "maybe", "me", "mean", "meanwhile", "merely", "might", "more", "moreover", "most", "mostly",
+                                             "much", "must", "my", "myself", "n", "name", "namely", "nd", "near", "nearly", "necessary", "need", "needs", "neither", "never", 
+                                             "nevertheless", "new", "next", "nine", "no", "nobody", "non", "none", "noone", "nor", "normally", "not", "nothing", "novel", "now", 
+                                             "nowhere", "o", "obviously", "of", "off", "often", "oh", "ok", "okay", "old", "on", "once", "one", "ones", "only", "onto", "or", 
+                                             "other", "others", "otherwise", "ought", "our", "ours", "ourselves", "out", "outside", "over", "overall", "own", "p", "particular",
+                                             "particularly", "per", "perhaps", "placed", "please", "plus", "possible", "presumably", "probably", "provides", "q", "que", "quite", 
+                                             "qv", "r", "rather", "rd", "re", "really", "reasonably", "regarding", "regardless", "regards", "relatively", "respectively", "right",
+                                             "s", "said", "same", "saw", "say", "saying", "says", "second", "secondly", "see", "seeing", "seem", "seemed", "seeming", "seems", "seen",
+                                             "self", "selves", "sensible", "sent", "serious", "seriously", "seven", "several", "shall", "she", "should", "since", "six", "so", "some",
+                                             "somebody", "somehow", "someone", "something", "sometime", "sometimes", "somewhat", "somewhere", "soon", "sorry", "specified", "specify",
+                                             "specifying", "still", "sub", "such", "sup", "sure", "t", "take", "taken", "tell", "tends", "th", "than", "thank", "thanks", "thanx", 
+                                             "that", "thats", "the", "their", "theirs", "them", "themselves", "then", "thence", "there", "thereafter", "thereby", "therefore", 
+                                             "therein", "theres", "thereupon", "these", "they", "think", "third", "this", "thorough", "thoroughly", "those", "though", "three", 
+                                             "through", "throughout", "thru", "thus", "to", "together", "too", "took", "toward", "towards", "tried", "tries", "truly", "try", 
+                                             "trying", "twice", "two", "u", "un", "under", "unfortunately", "unless", "unlikely", "until", "unto", "up", "upon", "us", "use", 
+                                             "used", "useful", "uses", "using", "usually", "uucp", "v", "value", "various", "very", "via", "viz", "vs", "w", "want", "wants", 
+                                             "was", "way", "we", "welcome", "well", "went", "were", "what", "whatever", "when", "whence", "whenever", "where", "whereafter",
+                                             "whereas", "whereby", "wherein", "whereupon", "wherever", "whether", "which", "while", "whither", "who", "whoever", "whole", "whom",
+                                             "whose", "why", "will", "willing", "wish", "with", "within", "without", "wonder", "would", "would", "x", "y", "yes", "yet", "you", 
+                                             "your", "yours", "yourself", "yourselves", "z", "zero", "nbsp", "http", "www", "writeln", "pdf", "html", "endobj", "obj", "aacute",
+                                             "eacute", "iacute", "oacute", "uacute", "agrave", "egrave", "igrave", "ograve", "ugrave" };
+        public static  StreamWriter asci = new StreamWriter(@"C:\Users\T\Desktop\asci.txt", false);
+        public static void counter_topics(string str)
+        {
+            string[] topics_str;
+            topics_str=str.Split(',');
+            for (int i = 0; i < topics_str.Length; ++i)
+            {
+                for (int j = 0; j < numbers_topics; ++j)
+                    if (save_topics[j] == topics_str[i])
+                        return;
+                save_topics[numbers_topics++] = topics_str[i];
+            }
+        }
+        public static void save_word_array(string u) 
+        {
+            for (int i = 0; i < index_word; ++i)
+                if (save_word[i] == u)
+                    return;
+            save_word[index_word++] = u;
+            return;
+        }//این تابع کلمات استمنینگ شده را در یک ارایه به نامsave_wordمیریزد 
+        public static string delete_stopwords(string line,string newid)
+        {
+            UInt64 number_stop_word = 0;
+            words_befor_delet_stopwords += Convert.ToUInt64(number_word_after_and_befor_Tokenizing(line));
+            String u; 
+            string[] a;
+            int j;
+            porter.Stemmer s = new porter.Stemmer();
+            a = line.Split();
+            for (int i = 0; i < a.Length; ++i)
+                if (Search_stopwords(a[i]) == true)
+                {
+                    j = a[i].Length;
+                    for (int c = 0; c < j; c++)
+                        s.add(a[i][c]);
+                    s.stem();
+                    u = s.ToString();
+                    save_line[index_line, 0] = u;
+                    save_line[index_line++, 1] = newid;
+                    save_word_array(u);
+                    asci.WriteLine("{0}   {1}", u, newid);
+                }
+                else ++number_stop_word;
+            words_after_delet_stopwords +=( words_befor_delet_stopwords - number_stop_word);
+            return line;
+        }//این تابع کلمات استاپ وردهارا حذف کرده و همچنین عمل استمنینگ کردن نیز در  این تابع انجام می شود 
+        public static bool Search_stopwords(string line)
+        {
+            if (line == null||line=="") return false;
+            for (int i = 0; i < stopwords.Length; ++i)
+                if (line == stopwords[i]) { numbers_stopwords ++; return false; }
+            return true;
+        }//این تابع یک ورودی رشته را می گیرد وچک می کند که ایا رشته یک استاپ ورد است یا نه 
+        public static int number_word_after_and_befor_Tokenizing(string str)
+        {
+            int sum = 0;
+            for (int i = 0; i < str.Length; ++i)
+                if (str[i] == ' ' && i > 0 && str[i - 1] != ' ')
+                    ++sum;
+            return sum;
+        }
+        public static string Tokenizing(string line)
+        {
+            words_befor_Tokenizing += number_word_after_and_befor_Tokenizing(line);
+            string str=null;
+            for (int i = 0; i < line.Length; ++i)
+            {
+               //Console.Write(line[i]);
+                if (line[i] == 13) str += (" ");
+                else if ((line[i] > 47 && line[i] < 57) || (line[i] > 96 && line[i] < 123) || line[i] == 32)
+                    str += line[i];
+                else if ((line[i] > 64 && line[i] < 91))
+                    str += Convert.ToChar(line[i] + 32);
+                else { str += (' '); }
+            }
+            words_after_Tokenizing += number_word_after_and_befor_Tokenizing(str);
+          //Console.WriteLine(words_befor_Tokenizing + "\n" + words_after_Tokenizing);
+            return str;
+        }//این تابع عمل توکینز کردن را انجام می دهد وفقط حروف وعدد واسپیس را رد می کند وبقیه کاراکترها را فیلتر می کند و همچنین در این تابع حروف بزرگ  به حروف کوچک تبل می شوند
+        public static string BODY_doc(string line)
+        {
+            string str = null;
+            int line_lenth = line.Length;
+            int i = find_word_index(line, "<BODY>")+6;
+            while (i < line_lenth)
+                if (line[i] == '<' && line[i + 1] == '/' && line[i + 2] == 'B' && line[i + 3] == 'O' && line[i + 4] == 'D' && line[i + 5] == 'Y' && line[i + 6] == '>')
+                    break;
+                else str += line[i++];
+            return str;
+        }//این تابع متن درون تگ بادی را گرفته و خود تگ بادی را ازدرون ان حذف می کند 
+        public static string TITLE_doc(string line) 
+        {
+            string str=null;
+            int line_lenth = line.Length;
+            int i = 0;
+            if (line_lenth>0&&line[0] == '*') i = 13;
+            else i = 7;
+            while (i < line_lenth)
+                if (line[i] == '<' && line[i + 1] == '/' && line[i + 2] == 'T' && line[i + 3] == 'I' && line[i + 4] == 'T' && line[i + 5] == 'L' && line[i + 6] == 'E')
+                    break;
+                else str += line[i++];
+            return str;
+        }//این تابع متن درون تگ تایتل  را گرفته و خود تگ تایتل را ازدرون ان حذف می کند 
+        public static string TOPICS_doc(string line)
+        {
+            char[] slash={'/'};
+            string topics=null;
+            int i = 11;
+            int line_lenth = line.Length - 13;
+            while (i < line_lenth)
+            {
+                if (line[i] == '<' && line[i + 1] == slash[0])
+                { i = i + 7; topics += ','; }
+                else 
+                topics += line[i++];
+            }
+            counter_topics(topics);
+            return topics;
+        }//این تابع متن درون تگ تاپیک  را گرفته و خود تگ تاپیک را ازدرون ان حذف می کند
+        public static string NEWID_doc(string line) 
+        {
+            int i=0;
+            string newid=null;
+            while (i < line.Length)
+            {
+                if (line[i] == 'W' && line[i + 1] == 'I' && line[i + 2] == 'D' && line[i + 3] == '=' && line[i+4] == '"')
+                    break;
+                i++;
+            }
+            i = i + 5;
+            while (line[i] != '"')
+                newid += line[i++];
+                return newid ;
+        }//این تابع شماره خبر را ازتگ رویتر استخراج می کند 
+        public static int find_word_index(string str, string word)
+        {
+            int Length_str = str.Length;
+            int Length_word = word.Length;
+            int j, k, sum = 0;
+            if (Length_str >= Length_word && Length_word > 0)
+                for (int i = 0; i < Length_str; ++i)
+                {
+                    for (k = i, j = 0; j < Length_word; k++, j++)
+                        if (word[j] != str[k])
+                            break;
+                    if (j == Length_word) return i;
+                }
+            return sum;
+        }//این تابع یک رشته بعلاوه ی یک کلمه را گرفته و شماره کاراگتری را کلمه در رشته وجود دارد را بر می گرداند 
+        public static int find_word(string str, string word)
+        {
+            int Length_str=str.Length;
+            int Length_word=word.Length;
+            int j, k, sum = 0 ;
+            if (Length_str >= Length_word && Length_word>0)
+        for (int i = 0; i < Length_str; ++i)
+        {
+            for (k = i, j = 0; j < Length_word; k++, j++)
+                if (word[j] != str[k])
+                   break;
+            if (j == Length_word ) ++sum;
+        }
+         return sum;
+        }//این تابع یک رشته بعلاوه ی یک کلمه را گرفته و تعداد دفعاتی  راکه  کلمه در رشته تکرار شده  را بر می گرداند  
+        static void Main(string[] args)
+        {
+            char[] a={'"'};
+            string slash = "\\",newid="102jkj";
+            int  num_file =0,num_news=0;
+            string textMain, str=null, endnews = "</REUTERS>", line, rueter = "<REUTERS TOPICS=" + a[0] + "YES" + a[0];
+            string text = "C:" + slash[0] + "Users" + slash[0] + "T" + slash[0] + "Desktop" + slash[0] +"mostafa"+slash[0]+ "reuters21578";//این رشته ادرس فایل های ورودی را در خود نگه می دارد 
+            StreamWriter result_file_parse = new StreamWriter(@"C:\Users\T\Desktop\result_file_parse.txt", false);
+            StreamWriter invrted_index = new StreamWriter(@"C:\Users\T\Desktop\invrted_index.txt", false);
+            StreamWriter time = new StreamWriter(@"C:\Users\T\Desktop\time.txt", false);
+            int turn_on_search = 0,line_of_body=0;
+            while (num_file<22)//این حلقه ی وایل به ترتیب فایل های وردی را باز کی کند 
+            {
+                textMain = text + slash[0] + "reut2-" + Convert.ToString(num_file) + ".sgm";
+                StreamReader txt1 = new StreamReader(textMain);
+                line = txt1.ReadLine();
+                while (line != null) //این حلقه ی وایل فایل باز شده در حلقه ی اول را خط به خط پردازش می کند 
+                {
+                    if (line_of_body == 0 && find_word(line, rueter) > 0) 
+                    {
+                        turn_on_search = 1; 
+                        newid = NEWID_doc(line); 
+                        result_file_parse.WriteLine("NEWID_doc=" + newid);
+                        ++num_news;
+                    }//در این شرط اگر خط باز شده حاوی کاراکتر کوجکتری بعلاوه ی کلمهی رویتر بعلاوه کلمه ی تاپیکس مساوی با یس باشد   که نشان دهندهی یک خبر است ان رابه تابعNEWID_docمی فرستد تا شماره خبررا از ان خارج کند  
+                    else if ((turn_on_search == 1) && line_of_body == 0 && (find_word(line, "<TOPICS><D>") > 0))
+                        result_file_parse.WriteLine("TOPICS_doc=" + TOPICS_doc(line));//این شرط چک می کند که ایاخط بازیابی شده شامل کلمهی تاپیکس بعلاو هی تگ دی هست اگربود تایگیک های ان را خارج می ند 
+                    else if ((turn_on_search == 1) && line_of_body == 0 && find_word(line, "<TITLE>") > 0) 
+                        if (line[0] == '*') 
+                            result_file_parse.WriteLine("TITLE_doc=" + delete_stopwords(Tokenizing(TITLE_doc(line + txt1.ReadLine())), num_file.ToString())); 
+                        else result_file_parse.WriteLine("TITLE_doc=" + delete_stopwords(Tokenizing(TITLE_doc(line)), num_file.ToString())); 
+                    else if ((turn_on_search == 1) && line_of_body == 0 && find_word(line, "<BODY>") >  0) 
+                    {
+                        line_of_body = 1;
+                        str += line;
+                        str += ' ';
+                    }
+                    else if ((turn_on_search == 1) && line_of_body == 1 && find_word(line, "</BODY>") > 0)
+                    {
+                        result_file_parse.WriteLine("BODY=" + delete_stopwords(Tokenizing(BODY_doc((str = str + line))), num_file.ToString()));
+                        line_of_body = 0; 
+                        str = null; 
+                    }
+                    else if ((turn_on_search == 1) && line_of_body == 1) 
+                    {
+                        str += line; 
+                        str += ' '; 
+                    }
+                    else if ((turn_on_search == 1) && find_word(line, endnews) > 0)
+                    {
+                        turn_on_search = 0;
+                        result_file_parse.WriteLine("------------------------------------------------"); 
+                    }
+                    line = txt1.ReadLine();
+                }
+                result_file_parse.WriteLine("----------------------------");
+                ++num_file;
+                txt1.Close();
+            }
+            Console.WriteLine("number of news by true condition={0}",num_news);
+            Console.WriteLine("after from stmmening={0}", index_word);
+            Console.WriteLine(index_line);
+            Console.WriteLine("numbr of stopword={0}",numbers_stopwords);
+            Console.WriteLine("number of words after delet stopwords={0}", words_after_delet_stopwords);
+            Console.WriteLine("number of words befor delet stopwords={0}", words_befor_delet_stopwords);
+            Console.WriteLine("number of topics={0}",numbers_topics);
+            Console.WriteLine("number of words after Tokenizing={0}", words_after_Tokenizing);
+            Console.WriteLine("number of words befor Tokenizing={0}", words_befor_Tokenizing);
+            Console.WriteLine(DateTime.Now);
+            int[] number_of_file = new int[22];
+            for (int i = 0; i < index_word; ++i)
+            {
+                time.WriteLine(DateTime.Now);
+                for (int j = 0; j < index_line; ++j)
+                    if (save_word[i] == save_line[j, 0])
+                        number_of_file[Convert.ToInt32(save_line[j, 1])]++;
+                for (int k = 0; k < 22; ++k)
+                    if (number_of_file[k] != 0)
+                    { /*Console.WriteLine(save_word[i]+"="+i + "," + k + "," + number_of_file[k]);*/ invrted_index.WriteLine(save_word[i] + "=" + i + ',' + k + ',' + number_of_file[k]); number_of_file[k] = 0; }
+
+            }
+            Console.WriteLine(DateTime.Now);
+            asci.Close();
+            invrted_index.Close();
+            time.Close();
+        }
+    }
+}
+
